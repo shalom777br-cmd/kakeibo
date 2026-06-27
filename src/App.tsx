@@ -182,7 +182,14 @@ export default function App() {
       });
 
       if (!response.ok) {
-        throw new Error("Gemini AI による解析に失敗しました。");
+        let serverErrorMsg = "";
+        try {
+          const errData = await response.json();
+          if (errData && errData.error) {
+            serverErrorMsg = errData.error;
+          }
+        } catch (_) {}
+        throw new Error(serverErrorMsg || "Gemini AI による解析に失敗しました。");
       }
 
       const parsed = await response.json();
@@ -199,7 +206,7 @@ export default function App() {
       }
     } catch (err: any) {
       console.error(err);
-      setVoiceError("解析サーバーとの通信に失敗しました。手動でご入力ください。");
+      setVoiceError(err.message || "解析サーバーとの通信に失敗しました。手動でご入力ください。");
     } finally {
       setIsProcessingVoice(false);
     }

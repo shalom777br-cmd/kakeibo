@@ -69,6 +69,13 @@ async function generateContentWithFallback(params: { contents: string; config: a
 // Voice Input parsing endpoint
 app.post("/api/parse-voice", async (req, res) => {
   try {
+    if (!process.env.GEMINI_API_KEY) {
+      console.error("[Gemini] API Key is missing");
+      return res.status(500).json({ 
+        error: "GEMINI_API_KEYが設定されていません。AI Studioの設定からAPIキーを設定してください。" 
+      });
+    }
+
     const { text, currentDate } = req.body;
     if (!text) {
       return res.status(400).json({ error: "Text is required" });
