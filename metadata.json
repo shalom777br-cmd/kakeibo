@@ -1,0 +1,6 @@
+{
+  "name": "シンプル家計簿",
+  "description": "音声入力機能とPDF出力機能を備えた、シンプルで使いやすい家計簿アプリです。",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
