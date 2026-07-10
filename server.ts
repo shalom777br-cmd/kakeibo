@@ -94,7 +94,7 @@ Reference:
 - If "day before yesterday" (一昨日) is mentioned, calculate the date (two days before ${referenceDate}).
 - Resolve the category to a standard Japanese household category like: "食費" (Food), "日用品" (Daily Goods), "交際費" (Social/Entertainment), "交通費" (Transportation), "住宅費" (Housing), "光熱費" (Utilities), "通信費" (Communication), "趣味・娯楽" (Hobbies), "給与" (Salary), "その他収入" (Other Income), "その他支出" (Other Expense).
 - Determine if it's "income" (収入) or "expense" (支出). If not clear, default to "expense".
-- Extract the numeric amount (integer). If the user says "万円" (ten thousand yen), convert it to the full integer value (e.g., "1万円" = 10000).`,
+- Extract the numeric amount. If the user says "万円" (ten thousand yen), convert it to the full numeric value (e.g., "1万円" = 10000). It can be a decimal or float value if fractional.`,
       config: {
         systemInstruction: "You are an intelligent household ledger parser. Your task is to extract structured JSON from free-form Japanese text about household income or expenses. Return only valid JSON adhering to the schema.",
         responseMimeType: "application/json",
@@ -118,8 +118,8 @@ Reference:
               description: "Must be either 'income' or 'expense'.",
             },
             amount: {
-              type: Type.INTEGER,
-              description: "The transaction amount as an absolute positive integer number.",
+              type: Type.NUMBER,
+              description: "The transaction amount as an absolute positive number (can be a decimal/float).",
             },
           },
           required: ["date", "item", "category", "type", "amount"],

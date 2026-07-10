@@ -30,6 +30,11 @@ import {
   Phone,
   Gamepad2,
   Undo2,
+  ArrowUpDown,
+  FileSpreadsheet,
+  Download,
+  Upload,
+  Save,
 } from "lucide-react";
 import { Transaction, TransactionType } from "./types";
 import html2canvas from "html2canvas";
@@ -82,18 +87,40 @@ export default function App() {
   });
 
   const formatCurrency = (amount: number) => {
+    const formatted = amount.toLocaleString(undefined, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    });
     if (currency === "BRL") {
-      return `R$ ${amount.toLocaleString()}`;
+      return `R$ ${formatted}`;
     } else if (currency === "USD") {
-      return `$${amount.toLocaleString()}`;
+      return `$${formatted}`;
     } else {
-      return `¥${amount.toLocaleString()}`;
+      return `¥${formatted}`;
+    }
+  };
+
+  const formatDisplayDate = (dateStr: string) => {
+    try {
+      const date = new Date(dateStr);
+      if (isNaN(date.getTime())) return dateStr;
+      const days = ["日", "月", "火", "水", "木", "金", "土"];
+      const year = date.getFullYear();
+      const month = date.getMonth() + 1;
+      const day = date.getDate();
+      const dayOfWeek = days[date.getDay()];
+      return `${year}年${month}月${day}日 (${dayOfWeek})`;
+    } catch (e) {
+      return dateStr;
     }
   };
 
   const [searchQuery, setSearchQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [monthFilter, setMonthFilter] = useState("all");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">(() => {
+    return (localStorage.getItem("household_ledger_sort_order") as "asc" | "desc") || "asc";
+  });
 
   // Form states for manual adding/editing
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -128,6 +155,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("household_ledger_currency", currency);
   }, [currency]);
+
+  useEffect(() => {
+    localStorage.setItem("household_ledger_sort_order", sortOrder);
+  }, [sortOrder]);
 
   // Speech Recognition Setup
   useEffect(() => {
@@ -171,6 +202,11 @@ export default function App() {
   // Parse voice text with Gemini
   const parseTranscriptWithGemini = async (text: string) => {
     setIsProcessingVoice(true);
+    setVoiceError("");
+    
+    let parsed: any = null;
+    let didFail = false;
+
     try {
       const response = await fetch("/api/parse-voice", {
         method: "POST",
@@ -181,35 +217,46 @@ export default function App() {
         }),
       });
 
-      if (!response.ok) {
-        let serverErrorMsg = "";
-        try {
-          const errData = await response.json();
-          if (errData && errData.error) {
-            serverErrorMsg = errData.error;
-          }
-        } catch (_) {}
-        throw new Error(serverErrorMsg || "Gemini AI による解析に失敗しました。");
-      }
-
-      const parsed = await response.json();
-      if (parsed && parsed.item && parsed.amount) {
-        setSuggestedTransaction({
-          date: parsed.date,
-          item: parsed.item,
-          category: parsed.category,
-          type: parsed.type as TransactionType,
-          amount: parsed.amount,
-        });
+      if (response.ok) {
+        parsed = await response.json();
       } else {
-        setVoiceError("内容をうまく解釈できませんでした。もう一度はっきりお話しいただくか、手動で入力してください。");
+        didFail = true;
       }
     } catch (err: any) {
       console.error(err);
-      setVoiceError(err.message || "解析サーバーとの通信に失敗しました。手動でご入力ください。");
-    } finally {
-      setIsProcessingVoice(false);
+      didFail = true;
     }
+
+    // Always construct a suggested transaction even if parsing failed or was incomplete
+    // "不十分であっても聞き取り結果を収支明細一欄に反映させる"
+    const today = new Date().toISOString().slice(0, 10);
+    
+    // Try to extract numeric digits from the text as a fallback amount
+    let fallbackAmount = 0;
+    const digitsOnly = text.replace(/[^0-9.]/g, "");
+    if (digitsOnly) {
+      fallbackAmount = parseFloat(digitsOnly) || 0;
+    }
+
+    const suggestedDate = parsed?.date || today;
+    const suggestedItem = parsed?.item || text || "音声入力の明細";
+    const suggestedCategory = parsed?.category || (parsed?.type === "income" ? "その他収入" : "その他支出");
+    const suggestedType = (parsed?.type === "income" || parsed?.type === "expense") ? parsed.type : "expense";
+    const suggestedAmount = (typeof parsed?.amount === "number" && parsed.amount > 0) ? parsed.amount : fallbackAmount;
+
+    setSuggestedTransaction({
+      date: suggestedDate,
+      item: suggestedItem,
+      category: suggestedCategory,
+      type: suggestedType as TransactionType,
+      amount: suggestedAmount,
+    });
+
+    if (didFail || !parsed || !parsed.item || !parsed.amount) {
+      setVoiceError("一部の項目を自動判別できませんでしたが、聞き取り内容から明細案を作成しました。金額等を修正して登録できます。");
+    }
+
+    setIsProcessingVoice(false);
   };
 
   // Toggle voice recording
@@ -253,9 +300,16 @@ export default function App() {
       };
     });
 
-    // 2. Return sorted newest first (or as-is, but showing newest first is standard)
-    // We will do filtering next on this balanced list
-    return balanced.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime() || b.id.localeCompare(a.id));
+    // 2. Return sorted according to sortOrder state
+    // "asc": oldest first (追加順番ごとに上から下へ)
+    // "desc": newest first
+    return balanced.sort((a, b) => {
+      const dateDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
+      const idDiff = a.id.localeCompare(b.id);
+      const compositeDiff = dateDiff || idDiff;
+      
+      return sortOrder === "asc" ? compositeDiff : -compositeDiff;
+    });
   };
 
   const processedTransactions = getSortedAndBalancedTransactions();
@@ -295,7 +349,7 @@ export default function App() {
   const handleSaveTransaction = (e: React.FormEvent) => {
     e.preventDefault();
     if (!formItem.trim()) return;
-    const amount = parseInt(formAmount) || 0;
+    const amount = parseFloat(formAmount) || 0;
     if (amount <= 0) return;
 
     if (editingTransaction) {
@@ -341,6 +395,14 @@ export default function App() {
     setFormType(t.type);
     setFormAmount(t.amount.toString());
     setIsFormOpen(true);
+
+    // Smooth scroll to form card so the user sees it immediately
+    setTimeout(() => {
+      const element = document.getElementById("manual-form-card");
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 100);
   };
 
   // Delete transaction
@@ -387,6 +449,27 @@ export default function App() {
     setVoiceTranscript("");
   };
 
+  // Populate manual entry form with voice suggestion for further manual editing
+  const handleEditSuggested = () => {
+    if (!suggestedTransaction) return;
+    setFormDate(suggestedTransaction.date);
+    setFormItem(suggestedTransaction.item);
+    setFormCategory(suggestedTransaction.category);
+    setFormType(suggestedTransaction.type);
+    setFormAmount(suggestedTransaction.amount > 0 ? suggestedTransaction.amount.toString() : "");
+    setIsFormOpen(true);
+    setSuggestedTransaction(null);
+    setVoiceTranscript("");
+
+    // Smooth scroll to manual-form-card
+    setTimeout(() => {
+      const element = document.getElementById("manual-form-card");
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 100);
+  };
+
   // Export to PDF using html2canvas & jsPDF for perfect Japanese rendering
   const handleExportPDF = async () => {
     const element = document.getElementById("pdf-printable-template");
@@ -420,11 +503,117 @@ export default function App() {
     }
   };
 
-  // Quick preset voices simulation for demoing
-  const simulateVoiceInput = async (sampleText: string) => {
-    setSuggestedTransaction(null);
-    setVoiceTranscript(sampleText);
-    await parseTranscriptWithGemini(sampleText);
+  // Export to JSON backup file
+  const handleExportJSON = () => {
+    try {
+      const dataStr = JSON.stringify(transactions, null, 2);
+      const dataBlob = new Blob([dataStr], { type: "application/json" });
+      const url = URL.createObjectURL(dataBlob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `kakeibo_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("JSON export error:", err);
+      alert("データのバックアップ出力に失敗しました。");
+    }
+  };
+
+  // Import from JSON backup file
+  const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileReader = new FileReader();
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    fileReader.onload = (event) => {
+      try {
+        const parsed = JSON.parse(event.target?.result as string);
+        if (Array.isArray(parsed)) {
+          // Validate required fields for Transaction schema
+          const validated = parsed.filter(t => 
+            t && 
+            typeof t.id === "string" && 
+            typeof t.date === "string" && 
+            typeof t.item === "string" && 
+            typeof t.category === "string" && 
+            (t.type === "income" || t.type === "expense") && 
+            typeof t.amount === "number"
+          );
+
+          if (validated.length === 0 && parsed.length > 0) {
+            alert("有効な家計簿データが見つかりませんでした。ファイル形式を確認してください。");
+            return;
+          }
+
+          if (confirm(`${validated.length}件の明細データをインポートしますか？現在のデータは上書きされます。`)) {
+            setTransactions(validated);
+            alert("データを正常に復元しました。");
+          }
+        } else {
+          alert("形式が正しくありません。家計簿バックアップファイル（JSON形式）を選択してください。");
+        }
+      } catch (err) {
+        console.error("JSON import error:", err);
+        alert("ファイルの読み込み中にエラーが発生しました。");
+      }
+      e.target.value = "";
+    };
+    fileReader.readAsText(file);
+  };
+
+  // Export to CSV spreadsheet file with UTF-8 BOM
+  const handleExportCSV = () => {
+    try {
+      // Sort oldest first (ascending order) to calculate running balance correctly and arrange chronologically from top to bottom
+      const sortedTransactions = [...transactions].sort((a, b) => {
+        const dateDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
+        const idDiff = a.id.localeCompare(b.id);
+        return dateDiff || idDiff;
+      });
+
+      const headers = ["日付", "カテゴリ", "項目", "収入", "支出", "残高"];
+      
+      let runningBalance = 0;
+      const rows = sortedTransactions.map((t) => {
+        if (t.type === "income") {
+          runningBalance += t.amount;
+        } else {
+          runningBalance -= t.amount;
+        }
+
+        return [
+          t.date,
+          t.category,
+          t.item,
+          t.type === "income" ? t.amount : "",
+          t.type === "expense" ? t.amount : "",
+          runningBalance,
+        ];
+      });
+
+      const csvContent = "\uFEFF" + [
+        headers.join(","),
+        ...rows.map((row) => row.map((val) => {
+          const str = String(val);
+          if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+            return `"${str.replace(/"/g, '""')}"`;
+          }
+          return str;
+        }).join(",")),
+      ].join("\n");
+
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `kakeibo_export_${new Date().toISOString().slice(0, 10)}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("CSV export error:", err);
+      alert("CSVの書き出し中にエラーが発生しました。");
+    }
   };
 
   return (
@@ -444,17 +633,31 @@ export default function App() {
             </div>
           </div>
 
+          <div className="flex items-center gap-2">
+            {/* Talk and record button next to PDF output */}
+            <button
+              onClick={handleToggleVoice}
+              id="header-voice-btn"
+              className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-md text-xs font-bold shadow-sm transition-all cursor-pointer hover:shadow-md ${
+                isRecording
+                  ? "bg-rose-600 hover:bg-rose-700 text-white animate-pulse ring-2 ring-rose-500/20"
+                  : "bg-emerald-600 hover:bg-emerald-500 text-white"
+              }`}
+            >
+              {isRecording ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+              <span>{isRecording ? "聞き取り終了" : "話しかけて自動記帳"}</span>
+            </button>
 
-
-          {/* Right: PDF Output */}
-          <button
-            onClick={handleExportPDF}
-            id="pdf-export-button"
-            className="flex items-center space-x-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-md text-xs font-semibold shadow-sm transition-all cursor-pointer hover:shadow-md"
-          >
-            <FileDown className="h-4 w-4" />
-            <span>PDF出力</span>
-          </button>
+            {/* Right: PDF Output */}
+            <button
+              onClick={handleExportPDF}
+              id="pdf-export-button"
+              className="flex items-center space-x-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-md text-xs font-semibold shadow-sm transition-all cursor-pointer hover:shadow-md"
+            >
+              <FileDown className="h-4 w-4" />
+              <span>PDF出力</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -462,109 +665,119 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-4">
         {/* MAIN LAYOUT */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-          {/* LEFT COLUMN: PRIMARY INPUT & LEDGER TABLE */}
+          {/* LEFT COLUMN: LEDGER TABLE & PRIMARY INPUT */}
           <div className="lg:col-span-2 space-y-4">
-            {/* AI VOICE INPUT CARD */}
-            <div className="bg-slate-900 rounded-2xl p-4 text-white shadow-xl relative overflow-hidden border border-slate-800">
-              <div className="absolute right-0 bottom-0 translate-x-1/4 translate-y-1/4 opacity-5">
-                <Mic className="h-24 w-24 text-blue-400" />
+            {/* THE LEDGER TABLE */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xl overflow-hidden flex flex-col">
+              {/* Table header */}
+              <div className="px-5 py-3 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/50">
+                <div>
+                  <h2 className="text-base font-bold text-slate-800 flex items-center gap-1.5">
+                    <ArrowLeftRight className="h-4 w-4 text-slate-500" />
+                    <span>収支明細一覧</span>
+                  </h2>
+                  <p className="text-[10px] text-slate-400">左側から日付、項目、収入、支出、収支残高が順に並びます</p>
+                </div>
+
+                <button
+                  onClick={() => setSortOrder(prev => prev === "asc" ? "desc" : "asc")}
+                  className="shrink-0 flex items-center gap-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-xs self-start sm:self-auto hover:border-slate-300"
+                >
+                  <ArrowUpDown className="h-3.5 w-3.5 text-slate-500" />
+                  <span>並び順: {sortOrder === "asc" ? "登録が古い順 ↑" : "登録が新しい順 ↓"}</span>
+                </button>
               </div>
 
-              <div className="relative z-10 flex flex-col gap-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <Sparkles className="h-4 w-4 text-blue-400 animate-pulse" />
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">AI 音声入力</span>
+              {/* Responsive Table */}
+              <div className="overflow-x-auto flex-1">
+                {filteredTransactions.length === 0 ? (
+                  <div className="py-12 text-center text-slate-400">
+                    <Info className="h-6 w-6 mx-auto mb-1.5 text-slate-300" />
+                    <p className="text-xs font-medium">登録されている明細がありません</p>
+                    <p className="text-[10px] mt-0.5">音声入力か追加ボタンから登録してください</p>
                   </div>
-                  <span className="text-[9px] px-1.5 py-0.5 bg-blue-500/20 text-blue-300 font-bold rounded border border-blue-500/20">
-                    Gemini 搭載
-                  </span>
-                </div>
-
-                {/* Split layout: Mic on left, Presets on right */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-stretch">
-                  {/* Left Side: Mic Trigger & status */}
-                  <div className="flex items-center gap-3 bg-slate-950/40 p-3 rounded-xl border border-slate-800/60">
-                    <button
-                      onClick={handleToggleVoice}
-                      className={`h-11 w-11 shrink-0 rounded-full flex items-center justify-center transition-all duration-300 shadow-md cursor-pointer ${
-                        isRecording
-                          ? "bg-rose-600 hover:bg-rose-700 scale-105 shadow-rose-600/30 ring-4 ring-rose-500/20"
-                          : "bg-blue-600 hover:bg-blue-500 shadow-blue-600/20 hover:scale-105"
-                      }`}
-                    >
-                      {isRecording ? (
-                        <MicOff className="h-4.5 w-4.5 text-white animate-pulse" />
-                      ) : (
-                        <Mic className="h-4.5 w-4.5 text-white" />
-                      )}
-                    </button>
-
-                    <div className="min-w-0">
-                      <p className="text-xs font-bold text-white">話しかけて自動記帳</p>
-                      <p className="text-[10px] text-slate-400 truncate mt-0.5">
-                        {isRecording ? "聞き取り中... クリックで終了" : "クリックして話す"}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Right Side: Preset Quick Buttons */}
-                  <div className="flex flex-col justify-center bg-slate-950/20 p-2 rounded-xl border border-slate-800/30 gap-1">
-                    <p className="text-[9px] text-slate-500 font-bold px-1 uppercase tracking-wider">お試し (クリックで即入力):</p>
-                    <div className="grid grid-cols-3 md:grid-cols-1 gap-1">
-                      <button
-                        onClick={() => simulateVoiceInput("今日スーパーで食料品2500円買った")}
-                        className="bg-slate-800/50 hover:bg-slate-700 px-1.5 py-1 rounded text-slate-300 text-[10px] text-left truncate transition-colors cursor-pointer"
-                        title="今日スーパーで食料品2500円買った"
-                      >
-                        💬 スーパー 2500円
-                      </button>
-                      <button
-                        onClick={() => simulateVoiceInput("昨日は友達と居酒屋で飲み会、交際費で5000円使いました")}
-                        className="bg-slate-800/50 hover:bg-slate-700 px-1.5 py-1 rounded text-slate-300 text-[10px] text-left truncate transition-colors cursor-pointer"
-                        title="昨日は友達と居酒屋で飲み会、交際費で5000円使いました"
-                      >
-                        💬 交際費 5000円
-                      </button>
-                      <button
-                        onClick={() => simulateVoiceInput("今日アルバイトの給料が8万円入った")}
-                        className="bg-slate-800/50 hover:bg-slate-700 px-1.5 py-1 rounded text-slate-300 text-[10px] text-left truncate transition-colors cursor-pointer"
-                        title="今日アルバイトの給料が8万円入った"
-                      >
-                        💬 バイト代 8万円
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Transcribed live text & Suggestions */}
-                <AnimatePresence mode="wait">
-                  {voiceTranscript && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 5 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -5 }}
-                      className="p-3 bg-slate-950/60 rounded-xl border border-slate-800 backdrop-blur-sm text-xs"
-                    >
-                      <p className="text-[9px] text-slate-400 font-bold mb-0.5">聞き取り結果:</p>
-                      <p className="text-slate-200 font-medium font-mono leading-tight">{voiceTranscript}</p>
-                      
-                      {isProcessingVoice && (
-                        <div className="flex items-center gap-1.5 mt-2 text-[10px] text-slate-400">
-                          <div className="h-2.5 w-2.5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
-                          <span>解析中...</span>
-                        </div>
-                      )}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                {/* Voice Error feedback */}
-                {voiceError && (
-                  <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-300 text-[11px] flex items-start gap-1.5">
-                    <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                    <span>{voiceError}</span>
-                  </div>
+                ) : (
+                  <table className="w-full text-left border-collapse table-auto">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold text-[10px] uppercase tracking-wider">
+                        <th className="py-2.5 px-4">日付</th>
+                        <th className="py-2.5 px-4">項目 (カテゴリ)</th>
+                        <th className="py-2.5 px-4 text-right hidden md:table-cell">収入</th>
+                        <th className="py-2.5 px-4 text-right">支出</th>
+                        <th className="py-2.5 px-4 text-right font-semibold">収支残高</th>
+                        <th className="py-2.5 px-4 text-center w-20">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-sm">
+                      {filteredTransactions.map((t) => {
+                        const config = getCategoryConfig(t.category);
+                        const CategoryIcon = config.icon;
+                        
+                        return (
+                          <tr
+                            key={t.id}
+                            className="hover:bg-slate-50 transition-colors group"
+                          >
+                            {/* 1. 日付 */}
+                            <td className="py-2.5 px-4 font-mono text-slate-400 font-medium whitespace-nowrap text-[11px]">
+                              {t.date.replace(/-/g, ".")}
+                            </td>
+                            {/* 2. 項目 */}
+                            <td className="py-2.5 px-4">
+                              <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2">
+                                <span className="font-semibold text-slate-800 group-hover:text-blue-600 transition-colors text-xs">
+                                  {t.item}
+                                </span>
+                                <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold rounded border whitespace-nowrap self-start sm:self-auto ${config.color}`}>
+                                  <CategoryIcon className="h-2.5 w-2.5" />
+                                  {t.category}
+                                </span>
+                              </div>
+                            </td>
+                            {/* 3. 収入 */}
+                            <td className="py-2.5 px-4 text-right font-mono text-slate-500 hidden md:table-cell whitespace-nowrap text-xs">
+                              {t.type === "income" ? (
+                                <span className="text-emerald-600 font-semibold">+{formatCurrency(t.amount)}</span>
+                              ) : (
+                                <span className="text-slate-300">—</span>
+                              )}
+                            </td>
+                            {/* 4. 支出 */}
+                            <td className="py-2.5 px-4 text-right font-mono text-slate-500 whitespace-nowrap text-xs">
+                              {t.type === "expense" ? (
+                                <span className="text-rose-600 font-semibold">-{formatCurrency(t.amount)}</span>
+                              ) : (
+                                <span className="text-slate-300">—</span>
+                              )}
+                            </td>
+                            {/* 5. 収支残高 */}
+                            <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-900 text-xs whitespace-nowrap">
+                              {formatCurrency((t as any).runningBalance || 0)}
+                            </td>
+                            {/* 6. Action buttons */}
+                            <td className="py-2.5 px-4">
+                              <div className="flex items-center justify-center gap-1.5">
+                                <button
+                                  onClick={() => handleOpenEdit(t)}
+                                  className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors cursor-pointer"
+                                  title="編集"
+                                >
+                                  <Edit3 className="h-4 w-4" />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteTransaction(t.id)}
+                                  className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors cursor-pointer"
+                                  title="削除"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 )}
               </div>
             </div>
@@ -612,171 +825,102 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2 mt-4">
+                  <div className="flex flex-col sm:flex-row gap-2 mt-4">
                     <button
                       onClick={() => setSuggestedTransaction(null)}
-                      className="py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl transition-all cursor-pointer"
+                      className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl transition-all cursor-pointer text-center"
                     >
                       破棄する
                     </button>
                     <button
+                      onClick={handleEditSuggested}
+                      className="flex-1 py-2.5 bg-blue-100 hover:bg-blue-200 text-blue-800 text-xs font-semibold rounded-xl transition-all flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <Edit3 className="h-3.5 w-3.5" />
+                      <span>修正して記帳</span>
+                    </button>
+                    <button
                       onClick={handleConfirmSuggested}
-                      className="py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl transition-all shadow-sm shadow-emerald-200/50 flex items-center justify-center gap-1.5 cursor-pointer"
+                      className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl transition-all shadow-sm shadow-emerald-200/50 flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <Check className="h-3.5 w-3.5" />
-                      <span>記帳する</span>
+                      <span>そのまま記帳する</span>
                     </button>
                   </div>
                 </motion.div>
               )}
             </AnimatePresence>
 
-            {/* THE LEDGER TABLE */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-xl overflow-hidden flex flex-col">
-              {/* Table header / Controls */}
-              <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row gap-4 items-center justify-between">
-                <div>
-                  <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                    <ArrowLeftRight className="h-5 w-5 text-slate-500" />
-                    <span>収支明細一覧</span>
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-1">左側から日付、項目、収入、収支、収支残高が順に並びます</p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-                  {/* Search query */}
-                  <div className="relative flex-1 sm:flex-none">
-                    <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-                    <input
-                      type="text"
-                      placeholder="明細・カテゴリ検索..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="pl-9 pr-4 py-2 w-full sm:w-48 text-sm bg-slate-50/50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                    />
-                  </div>
-
-                  {/* Month filter */}
-                  <select
-                    value={monthFilter}
-                    onChange={(e) => setMonthFilter(e.target.value)}
-                    className="py-2 px-3 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 cursor-pointer"
-                  >
-                    <option value="all">すべての月</option>
-                    {availableMonths.map((m) => {
-                      const [year, month] = m.split("-");
-                      return (
-                        <option key={m} value={m}>
-                          {year}年{month}月
-                        </option>
-                      );
-                    })}
-                  </select>
-
-                  {/* Category filter */}
-                  <select
-                    value={categoryFilter}
-                    onChange={(e) => setCategoryFilter(e.target.value)}
-                    className="py-2 px-3 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 cursor-pointer"
-                  >
-                    <option value="all">全カテゴリ</option>
-                    {CATEGORIES.map((cat) => (
-                      <option key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+            {/* AI VOICE INPUT CARD */}
+            <div className="bg-slate-900 rounded-2xl p-4 text-white shadow-xl relative overflow-hidden border border-slate-800">
+              <div className="absolute right-0 bottom-0 translate-x-1/4 translate-y-1/4 opacity-5">
+                <Mic className="h-24 w-24 text-blue-400" />
               </div>
 
-              {/* Responsive Table */}
-              <div className="overflow-x-auto flex-1">
-                {filteredTransactions.length === 0 ? (
-                  <div className="py-16 text-center text-slate-400">
-                    <Info className="h-8 w-8 mx-auto mb-2 text-slate-300" />
-                    <p className="text-sm font-medium">登録されている明細がありません</p>
-                    <p className="text-xs mt-1">音声入力か追加ボタンから登録してください</p>
+              <div className="relative z-10 flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Sparkles className="h-4 w-4 text-blue-400 animate-pulse" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">AI 音声入力</span>
                   </div>
-                ) : (
-                  <table className="w-full text-left border-collapse table-auto">
-                    <thead>
-                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold text-xs uppercase tracking-widest">
-                        <th className="py-4 px-8">日付</th>
-                        <th className="py-4 px-8">項目 (カテゴリ)</th>
-                        <th className="py-4 px-8 text-right hidden md:table-cell">収入</th>
-                        <th className="py-4 px-8 text-right">収支</th>
-                        <th className="py-4 px-8 text-right font-semibold">収支残高</th>
-                        <th className="py-4 px-8 text-center w-24">操作</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 text-sm">
-                      {filteredTransactions.map((t) => {
-                        const config = getCategoryConfig(t.category);
-                        const CategoryIcon = config.icon;
-                        
-                        return (
-                          <tr
-                            key={t.id}
-                            className="hover:bg-slate-50 transition-colors group"
-                          >
-                            {/* 1. 日付 */}
-                            <td className="py-5 px-8 font-mono text-slate-500 font-medium whitespace-nowrap">
-                              {t.date.replace(/-/g, ".")}
-                            </td>
-                            {/* 2. 項目 */}
-                            <td className="py-5 px-8">
-                              <div className="flex flex-col gap-1.5">
-                                <span className="font-semibold text-slate-800 group-hover:text-blue-600 transition-colors">
-                                  {t.item}
-                                </span>
-                                <div className="flex items-center gap-1.5">
-                                  <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 text-[10px] font-bold rounded border ${config.color}`}>
-                                    <CategoryIcon className="h-3 w-3" />
-                                    {t.category}
-                                  </span>
-                                </div>
-                              </div>
-                            </td>
-                            {/* 3. 収入 */}
-                            <td className="py-5 px-8 text-right font-mono text-slate-500 hidden md:table-cell whitespace-nowrap">
-                              {t.type === "income" ? (
-                                <span className="text-emerald-600 font-semibold">+{formatCurrency(t.amount)}</span>
-                              ) : (
-                                <span className="text-slate-300">—</span>
-                              )}
-                            </td>
-                            {/* 4. 収支 (Transaction Net) */}
-                            <td className={`py-5 px-8 text-right font-mono font-bold whitespace-nowrap ${t.type === "income" ? "text-emerald-600" : "text-rose-600"}`}>
-                              {t.type === "income" ? "+" : "-"}{formatCurrency(t.amount)}
-                            </td>
-                            {/* 5. 収支残高 */}
-                            <td className="py-5 px-8 text-right font-mono font-bold text-slate-900 text-base whitespace-nowrap">
-                              {formatCurrency((t as any).runningBalance || 0)}
-                            </td>
-                            {/* 6. Action buttons */}
-                            <td className="py-5 px-8">
-                              <div className="flex items-center justify-center gap-1.5">
-                                <button
-                                  onClick={() => handleOpenEdit(t)}
-                                  className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors cursor-pointer"
-                                  title="編集"
-                                >
-                                  <Edit3 className="h-4 w-4" />
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteTransaction(t.id)}
-                                  className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors cursor-pointer"
-                                  title="削除"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                  <span className="text-[9px] px-1.5 py-0.5 bg-blue-500/20 text-blue-300 font-bold rounded border border-blue-500/20">
+                    Gemini 搭載
+                  </span>
+                </div>
+
+                {/* Simplified full-width voice button & guidance */}
+                <div className="flex items-center gap-3 bg-slate-950/40 p-3 rounded-xl border border-slate-800/60">
+                  <button
+                    onClick={handleToggleVoice}
+                    className={`h-11 w-11 shrink-0 rounded-full flex items-center justify-center transition-all duration-300 shadow-md cursor-pointer ${
+                      isRecording
+                        ? "bg-rose-600 hover:bg-rose-700 scale-105 shadow-rose-600/30 ring-4 ring-rose-500/20"
+                        : "bg-blue-600 hover:bg-blue-500 shadow-blue-600/20 hover:scale-105"
+                    }`}
+                  >
+                    {isRecording ? (
+                      <MicOff className="h-4.5 w-4.5 text-white animate-pulse" />
+                    ) : (
+                      <Mic className="h-4.5 w-4.5 text-white" />
+                    )}
+                  </button>
+
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-white">話しかけて自動記帳</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">
+                      {isRecording ? "聞き取り中... クリックで終了" : "上のボタンまたはこちらをクリックして話すだけで、AIが自動で項目や金額を判別して入力します"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Transcribed live text & Suggestions */}
+                <AnimatePresence mode="wait">
+                  {voiceTranscript && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className="p-3 bg-slate-950/60 rounded-xl border border-slate-800 backdrop-blur-sm text-xs"
+                    >
+                      <p className="text-[9px] text-slate-400 font-bold mb-0.5">聞き取り結果:</p>
+                      <p className="text-slate-200 font-medium font-mono leading-tight">{voiceTranscript}</p>
+                      
+                      {isProcessingVoice && (
+                        <div className="flex items-center gap-1.5 mt-2 text-[10px] text-slate-400">
+                          <div className="h-2.5 w-2.5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                          <span>解析中...</span>
+                        </div>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Voice Error feedback */}
+                {voiceError && (
+                  <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-300 text-[11px] flex items-start gap-1.5">
+                    <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                    <span>{voiceError}</span>
+                  </div>
                 )}
               </div>
             </div>
@@ -803,9 +947,25 @@ export default function App() {
             </div>
 
             {/* MANUAL TRANSACTION TRIGGERS & FORM */}
-            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xl">
+            <div
+              id="manual-form-card"
+              className={`rounded-2xl border p-6 shadow-xl transition-all duration-300 ${
+                editingTransaction
+                  ? "bg-blue-50/20 border-blue-400 ring-2 ring-blue-500/10"
+                  : "bg-white border-slate-200"
+              }`}
+            >
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-base font-bold text-slate-900">手動で記帳する</h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-slate-900">
+                    {editingTransaction ? "明細を編集する" : "手動で記帳する"}
+                  </h3>
+                  {editingTransaction && (
+                    <span className="text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-bold animate-pulse">
+                      編集モード
+                    </span>
+                  )}
+                </div>
                 {!isFormOpen && (
                   <button
                     onClick={() => {
@@ -890,15 +1050,15 @@ export default function App() {
 
                   {/* Amount Input */}
                   <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1.5">金額 (円)</label>
+                    <label className="block text-xs font-bold text-slate-500 mb-1.5">金額</label>
                     <input
                       type="number"
-                      pattern="[0-9]*"
-                      inputMode="numeric"
+                      step="any"
+                      inputMode="decimal"
                       value={formAmount}
                       onChange={(e) => setFormAmount(e.target.value)}
-                      placeholder="0"
-                      min="1"
+                      placeholder="0.00"
+                      min="0.01"
                       required
                       className="w-full px-4 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-mono font-bold"
                     />
@@ -962,38 +1122,85 @@ export default function App() {
               </div>
             </div>
 
-            {/* DEMO / RESET CARD */}
-            <div className="bg-slate-100 rounded-2xl border border-slate-200 p-5 text-slate-500 text-xs flex flex-col justify-between">
+            {/* DATA SAVE & BACKUP CARD */}
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 text-slate-500 text-xs space-y-4">
               <div>
-                <p className="font-bold text-slate-700 mb-1">データの保管について</p>
-                <p className="leading-relaxed mb-3">
-                  この家計簿は、お客様のブラウザのローカルストレージに安全に保管されます。ログイン不要で、すぐに使い始められます。
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Save className="h-4 w-4 text-slate-700" />
+                  <span className="font-bold text-slate-800">データの保存とバックアップ</span>
+                </div>
+                <p className="leading-relaxed">
+                  本アプリのデータはお使いのブラウザに自動保存されますが、万一に備えてファイルへの保存や復元が可能です。
                 </p>
               </div>
-              <div className="flex gap-2">
+
+              {/* Action Buttons for export/import */}
+              <div className="space-y-2">
                 <button
-                  onClick={() => {
-                    if (confirm("すべての家計簿データを消去して初期化しますか？")) {
-                      setTransactions([]);
-                      localStorage.removeItem("household_ledger_transactions_v4");
-                    }
-                  }}
-                  className="flex-1 py-2 border border-slate-200 hover:bg-slate-200 hover:text-slate-700 rounded-xl flex items-center justify-center gap-1 transition-colors cursor-pointer font-medium"
+                  onClick={handleExportCSV}
+                  disabled={transactions.length === 0}
+                  className="w-full py-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <RotateCcw className="h-3 w-3" />
-                  <span>データをリセット</span>
+                  <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+                  <span>CSVファイルとして書き出す (Excel等)</span>
                 </button>
-                <button
-                  onClick={() => {
-                    if (confirm("すべての家計簿データを消去して初期化しますか？")) {
-                      setTransactions([]);
-                      localStorage.setItem("household_ledger_transactions_v4", JSON.stringify([]));
-                    }
-                  }}
-                  className="py-2 px-3 text-rose-600 border border-rose-200 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer font-medium"
-                >
-                  全消去
-                </button>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={handleExportJSON}
+                    disabled={transactions.length === 0}
+                    className="py-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Download className="h-3.5 w-3.5 text-blue-600" />
+                    <span>バックアップ保存</span>
+                  </button>
+
+                  <label
+                    htmlFor="backup-file-input"
+                    className="py-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer font-semibold text-center"
+                  >
+                    <Upload className="h-3.5 w-3.5 text-indigo-600" />
+                    <span>バックアップ復元</span>
+                  </label>
+                  <input
+                    type="file"
+                    id="backup-file-input"
+                    accept=".json"
+                    onChange={handleImportJSON}
+                    className="hidden"
+                  />
+                </div>
+              </div>
+
+              {/* Dangerous operations section */}
+              <div className="pt-2.5 border-t border-slate-100">
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      if (confirm("すべての家計簿データを消去して初期化しますか？")) {
+                        setTransactions([]);
+                        localStorage.removeItem("household_ledger_transactions_v4");
+                        alert("データをリセットしました。");
+                      }
+                    }}
+                    className="flex-1 py-1.5 border border-slate-200 hover:bg-slate-50 rounded-lg flex items-center justify-center gap-1 text-[11px] transition-colors cursor-pointer font-medium"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    <span>データをリセット</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm("注意：すべての家計簿データが永久に削除されます。本当によろしいですか？")) {
+                        setTransactions([]);
+                        localStorage.setItem("household_ledger_transactions_v4", JSON.stringify([]));
+                        alert("すべてのデータを消去しました。");
+                      }
+                    }}
+                    className="py-1.5 px-3 text-rose-600 border border-rose-200 hover:bg-rose-50 rounded-lg text-[11px] transition-colors cursor-pointer font-medium"
+                  >
+                    全消去
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -1088,7 +1295,7 @@ export default function App() {
                 <th style={{ padding: "3mm 4mm", color: "#475569" }}>カテゴリ</th>
                 <th style={{ padding: "3mm 4mm", color: "#475569" }}>項目名</th>
                 <th style={{ padding: "3mm 4mm", color: "#475569", textAlign: "right" }}>収入</th>
-                <th style={{ padding: "3mm 4mm", color: "#475569", textAlign: "right" }}>収支</th>
+                <th style={{ padding: "3mm 4mm", color: "#475569", textAlign: "right" }}>支出</th>
                 <th style={{ padding: "3mm 4mm", color: "#475569", textAlign: "right" }}>残高</th>
               </tr>
             </thead>
@@ -1110,8 +1317,8 @@ export default function App() {
                       <td style={{ padding: "3mm 4mm", textAlign: "right", color: "#475569", fontFamily: "monospace" }}>
                         {t.type === "income" ? formatCurrency(t.amount) : "—"}
                       </td>
-                      <td style={{ padding: "3mm 4mm", textAlign: "right", fontWeight: "bold", color: t.type === "income" ? "#166534" : "#991b1b", fontFamily: "monospace" }}>
-                        {t.type === "income" ? "+" : "-"}{formatCurrency(t.amount)}
+                      <td style={{ padding: "3mm 4mm", textAlign: "right", color: "#475569", fontFamily: "monospace" }}>
+                        {t.type === "expense" ? formatCurrency(t.amount) : "—"}
                       </td>
                       <td style={{ padding: "3mm 4mm", textAlign: "right", fontWeight: "bold", color: "#0f172a", fontFamily: "monospace" }}>
                         {formatCurrency(balanceUpToHere)}
