@@ -196,6 +196,14 @@ export default function App() {
   const [lastDeletedTransaction, setLastDeletedTransaction] = useState<Transaction | null>(null);
   const [showUndoToast, setShowUndoToast] = useState(false);
 
+  // PDF settings states
+  const [pdfTitle, setPdfTitle] = useState(() => {
+    return localStorage.getItem("household_ledger_pdf_title") || "収支明細報告書";
+  });
+  const [pdfSubtitle, setPdfSubtitle] = useState(() => {
+    return localStorage.getItem("household_ledger_pdf_subtitle") || "シンプル家計簿 収支状況サマリー";
+  });
+
   // Ref for speech recognition
   const recognitionRef = useRef<any>(null);
 
@@ -211,6 +219,14 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("household_ledger_sort_order", sortOrder);
   }, [sortOrder]);
+
+  useEffect(() => {
+    localStorage.setItem("household_ledger_pdf_title", pdfTitle);
+  }, [pdfTitle]);
+
+  useEffect(() => {
+    localStorage.setItem("household_ledger_pdf_subtitle", pdfSubtitle);
+  }, [pdfSubtitle]);
 
   // Speech Recognition Setup
   useEffect(() => {
@@ -555,7 +571,8 @@ export default function App() {
       const imgHeight = (canvas.height * imgWidth) / canvas.width;
 
       pdf.addImage(imgData, "PNG", 0, 0, imgWidth, imgHeight);
-      pdf.save(`家計簿_収支明細_${new Date().toISOString().slice(0, 10)}.pdf`);
+      const safeFilename = (pdfTitle || "収支明細報告書").replace(/[\\/:*?"<>|]/g, "_");
+      pdf.save(`${safeFilename}_${new Date().toISOString().slice(0, 10)}.pdf`);
     } catch (err) {
       console.error("PDF generation error:", err);
       alert("PDFの出力中にエラーが発生しました。");
@@ -1180,6 +1197,41 @@ export default function App() {
               )}
             </div>
 
+            {/* PDF OUTPUT SETTING CARD */}
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 text-slate-500 text-xs space-y-4">
+              <div>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <FileDown className="h-4 w-4 text-slate-700" />
+                  <span className="font-bold text-slate-800">PDF出力設定</span>
+                </div>
+                <p className="leading-relaxed">
+                  PDF明細報告書を出力する際のタイトルやサブタイトルをカスタマイズできます。
+                </p>
+              </div>
+              <div className="space-y-3 pt-1">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1">報告書タイトル</label>
+                  <input
+                    type="text"
+                    value={pdfTitle}
+                    onChange={(e) => setPdfTitle(e.target.value)}
+                    placeholder="例: 収支明細報告書"
+                    className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium text-slate-800"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1">サブタイトル</label>
+                  <input
+                    type="text"
+                    value={pdfSubtitle}
+                    onChange={(e) => setPdfSubtitle(e.target.value)}
+                    placeholder="例: シンプル家計簿 収支状況サマリー"
+                    className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium text-slate-800"
+                  />
+                </div>
+              </div>
+            </div>
+
             {/* CURRENCY SETTING CARD */}
             <div className="bg-white rounded-2xl border border-slate-200 p-5 text-slate-500 text-xs space-y-4">
               <div>
@@ -1349,8 +1401,8 @@ export default function App() {
         {/* Invoice / PDF Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", borderBottom: "2px solid #e2e8f0", paddingBottom: "8mm", marginBottom: "8mm" }}>
           <div>
-            <h1 style={{ fontSize: "24px", fontWeight: "bold", color: "#0f172a", margin: "0 0 2mm 0" }}>収支明細報告書</h1>
-            <p style={{ fontSize: "12px", color: "#64748b", margin: 0 }}>シンプル家計簿 収支状況サマリー</p>
+            <h1 style={{ fontSize: "24px", fontWeight: "bold", color: "#0f172a", margin: "0 0 2mm 0" }}>{pdfTitle}</h1>
+            <p style={{ fontSize: "12px", color: "#64748b", margin: 0 }}>{pdfSubtitle}</p>
           </div>
           <div style={{ textAlign: "right" }}>
             <p style={{ fontSize: "11px", color: "#64748b", margin: "0 0 1mm 0" }}>出力日時: {new Date().toLocaleString()}</p>
