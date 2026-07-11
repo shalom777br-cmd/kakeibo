@@ -52,6 +52,7 @@ const CATEGORIES = [
   "光熱費",
   "通信費",
   "趣味・娯楽",
+  "繰越",
   "給与",
   "その他収入",
   "その他支出",
@@ -66,9 +67,60 @@ const categoryConfigs: Record<string, { color: string; icon: any }> = {
   "光熱費": { color: "bg-orange-50 text-orange-700 border-orange-100", icon: Zap },
   "通信費": { color: "bg-cyan-50 text-cyan-700 border-cyan-100", icon: Phone },
   "趣味・娯楽": { color: "bg-purple-50 text-purple-700 border-purple-100", icon: Gamepad2 },
+  "繰越": { color: "bg-sky-50 text-sky-700 border-sky-100", icon: RotateCcw },
   "給与": { color: "bg-emerald-50 text-emerald-700 border-emerald-100", icon: Coins },
   "その他収入": { color: "bg-teal-50 text-teal-700 border-teal-100", icon: TrendingUp },
   "その他支出": { color: "bg-rose-50 text-rose-700 border-rose-100", icon: TrendingDown },
+};
+
+const predictTypeAndCategory = (itemName: string): { type?: TransactionType; category?: string } | null => {
+  const name = itemName.trim().toLowerCase();
+  if (!name) return null;
+
+  // 1. Specific carry forward matches
+  if (name.includes("前月からの繰越") || name === "前月から") {
+    return { type: "income", category: "繰越" };
+  }
+  if (name.includes("翌月への繰越") || name === "翌月へ") {
+    return { type: "expense", category: "繰越" };
+  }
+  if (name.includes("繰越") || name.includes("くりこし")) {
+    if (name.includes("前")) return { type: "income", category: "繰越" };
+    if (name.includes("翌") || name.includes("次")) return { type: "expense", category: "繰越" };
+    return { category: "繰越" };
+  }
+
+  // 2. Typical income keywords
+  const incomeKeywords = [
+    { keys: ["給与", "給料", "給与口座", "賞与", "ボーナス", "手当", "salary", "pay"], cat: "給与", type: "income" as const },
+    { keys: ["売上", "副業", "雑収入", "メルカリ", "ラクマ", "ヤフオク", "お小遣い", "おこづかい", "臨時収入", "配当", "利息", "還付", "キャッシュバック", "ポイント還元"], cat: "その他収入", type: "income" as const }
+  ];
+
+  for (const group of incomeKeywords) {
+    if (group.keys.some(k => name.includes(k))) {
+      return { type: group.type, category: group.cat };
+    }
+  }
+
+  // 3. Typical expense keywords
+  const expenseKeywords = [
+    { keys: ["スーパー", "ライフ", "イオン", "業務スーパー", "成城石井", "食費", "ランチ", "ディナー", "ラーメン", "定食", "居酒屋", "カフェ", "スタバ", "マック", "吉野家", "弁当", "惣菜", "レストラン", "肉", "八百屋", "魚"], cat: "食費", type: "expense" as const },
+    { keys: ["薬局", "ドラッグストア", "マツキヨ", "ウエルシア", "スギ薬局", "日用品", "ティッシュ", "トイレットペーパー", "洗剤", "ゴミ袋", "シャンプー", "歯磨き", "ダイソー", "セリア", "キャンドゥ", "100均", "ニトリ", "無印"], cat: "日用品", type: "expense" as const },
+    { keys: ["交際費", "プレゼント", "ギフト", "お祝い", "飲み会", "会費", "お土産", "帰省", "食事会", "デート"], cat: "交際費", type: "expense" as const },
+    { keys: ["電車", "バス", "タクシー", "切符", "ガソリン", "定期", "suica", "pasmo", "icoca", "駅", "運賃", "駐車場", "高速代", "航空券", "新幹線"], cat: "交通費", type: "expense" as const },
+    { keys: ["家賃", "共益費", "管理費", "更新料", "住宅ローン", "ローン", "敷金", "礼金", "リフォーム", "修繕"], cat: "住宅費", type: "expense" as const },
+    { keys: ["水道", "電気", "ガス", "水道局", "東京電力", "東京ガス", "光熱費", "電気代", "ガス代", "水道代", "燃料費"], cat: "光熱費", type: "expense" as const },
+    { keys: ["携帯", "スマホ", "ドコモ", "au", "ソフトバンク", "楽天モバイル", "インターネット", "wifi", "回線", "通信費", "プロバイダ", "郵便", "切手", "宅急便", "佐川", "ヤマト"], cat: "通信費", type: "expense" as const },
+    { keys: ["ゲーム", "映画", "漫画", "本", "雑誌", "小説", "カラオケ", "旅行", "ホテル", "チケット", "ライブ", "ディズニー", "趣味", "音楽", "netflix", "prime video", "youtube premium", "ネトフリ"], cat: "趣味・娯楽", type: "expense" as const }
+  ];
+
+  for (const group of expenseKeywords) {
+    if (group.keys.some(k => name.includes(k))) {
+      return { type: group.type, category: group.cat };
+    }
+  }
+
+  return null;
 };
 
 const getCategoryConfig = (cat: string) => {
@@ -422,6 +474,15 @@ export default function App() {
       setTransactions([lastDeletedTransaction, ...transactions]);
       setLastDeletedTransaction(null);
       setShowUndoToast(false);
+    }
+  };
+
+  const handleItemChange = (val: string) => {
+    setFormItem(val);
+    const prediction = predictTypeAndCategory(val);
+    if (prediction) {
+      if (prediction.type) setFormType(prediction.type);
+      if (prediction.category) setFormCategory(prediction.category);
     }
   };
 
@@ -1025,11 +1086,39 @@ export default function App() {
                     <input
                       type="text"
                       value={formItem}
-                      onChange={(e) => setFormItem(e.target.value)}
+                      onChange={(e) => handleItemChange(e.target.value)}
                       placeholder="例: スーパー ライフ、カフェ、給与"
                       required
                       className="w-full px-4 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
                     />
+                    
+                    {/* Quick suggestion buttons for carry-forward */}
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFormItem("前月からの繰越");
+                          setFormType("income");
+                          setFormCategory("繰越");
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-emerald-700 bg-emerald-50/50 hover:bg-emerald-100 border border-emerald-100 rounded-xl cursor-pointer transition-colors"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        前月からの繰越 (収入)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFormItem("翌月への繰越");
+                          setFormType("expense");
+                          setFormCategory("繰越");
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-rose-700 bg-rose-50/50 hover:bg-rose-100 border border-rose-100 rounded-xl cursor-pointer transition-colors"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        翌月への繰越 (支出)
+                      </button>
+                    </div>
                   </div>
 
                   {/* Category Selection */}

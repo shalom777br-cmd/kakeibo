@@ -92,7 +92,8 @@ Reference:
 - If no date is mentioned, assume today's date (${referenceDate}).
 - If "yesterday" (昨日) is mentioned, calculate the date (one day before ${referenceDate}).
 - If "day before yesterday" (一昨日) is mentioned, calculate the date (two days before ${referenceDate}).
-- Resolve the category to a standard Japanese household category like: "食費" (Food), "日用品" (Daily Goods), "交際費" (Social/Entertainment), "交通費" (Transportation), "住宅費" (Housing), "光熱費" (Utilities), "通信費" (Communication), "趣味・娯楽" (Hobbies), "給与" (Salary), "その他収入" (Other Income), "その他支出" (Other Expense).
+- Resolve the category to a standard Japanese household category like: "食費" (Food), "日用品" (Daily Goods), "交際費" (Social/Entertainment), "交通費" (Transportation), "住宅費" (Housing), "光熱費" (Utilities), "通信費" (Communication), "趣味・娯楽" (Hobbies), "繰越" (Carried forward), "給与" (Salary), "その他収入" (Other Income), "その他支出" (Other Expense).
+- Specifically, if the text mentions carrying forward from the previous month (前月からの繰越) or similar, classify it as "income" with category "繰越". If it is about carrying forward to the next month (翌月への繰越) or similar, classify it as "expense" with category "繰越".
 - Determine if it's "income" (収入) or "expense" (支出). If not clear, default to "expense".
 - Extract the numeric amount. If the user says "万円" (ten thousand yen), convert it to the full numeric value (e.g., "1万円" = 10000). It can be a decimal or float value if fractional.`,
       config: {
